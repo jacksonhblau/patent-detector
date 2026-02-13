@@ -10,7 +10,6 @@ interface TimelineStep {
   href: string;
   status: 'complete' | 'current' | 'upcoming';
   icon: string;
-  ctaLabel?: string;
 }
 
 export default function DashboardPage() {
@@ -38,9 +37,8 @@ export default function DashboardPage() {
       title: 'Explore Settlement & Litigation Options',
       description: 'Calculate damages, settlement ranges, and litigation funding opportunities',
       href: '/litigation',
-      status: 'upcoming',
+      status: 'current',
       icon: '💰',
-      ctaLabel: 'Learn More',
     },
   ];
 
@@ -143,11 +141,9 @@ export default function DashboardPage() {
                       <Link href={step.href} className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
                         step.status === 'current'
                           ? 'text-white bg-[#0066FF] hover:bg-[#0052CC]'
-                          : step.status === 'upcoming'
-                            ? 'text-blue-700 bg-blue-50 hover:bg-blue-100'
-                            : 'text-green-700 bg-green-50 hover:bg-green-100'
+                          : 'text-green-700 bg-green-50 hover:bg-green-100'
                       }`}>
-                        {step.ctaLabel ?? (step.status === 'current' ? 'Get Started →' : 'View →')}
+                        {step.id === 3 ? 'Learn More' : step.status === 'current' ? 'Get Started →' : 'View →'}
                       </Link>
                     </div>
                   </div>
