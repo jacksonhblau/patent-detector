@@ -101,7 +101,7 @@ export async function POST(request: NextRequest) {
         const result = await researchAndAnalyzeCompetitor({
           companyName: comp.competitorName,
           patentCategory: 'Blockchain & Distributed Ledger Technology',
-          sourcePatentId: null,
+          sourcePatentId: undefined,
           existingCompetitorId: competitor.id,
           userId,
         });
