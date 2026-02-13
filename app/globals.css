@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* ── Fix: Make all form input text dark and readable ── */
+input,
+textarea,
+select {
+  color: #111827 !important; /* gray-900 */
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #9ca3af !important; /* gray-400 — visible but clearly lighter than typed text */
+}
+
+/* Ensure disabled inputs are slightly muted but still readable */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  color: #6b7280 !important; /* gray-500 */
+  background-color: #f9fafb; /* gray-50 */
+}
