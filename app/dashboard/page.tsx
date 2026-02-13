@@ -10,6 +10,7 @@ interface TimelineStep {
   href: string;
   status: 'complete' | 'current' | 'upcoming';
   icon: string;
+  ctaLabel?: string;
 }
 
 export default function DashboardPage() {
@@ -39,6 +40,7 @@ export default function DashboardPage() {
       href: '/litigation',
       status: 'upcoming',
       icon: '💰',
+      ctaLabel: 'Learn More',
     },
   ];
 
@@ -138,22 +140,15 @@ export default function DashboardPage() {
                     </div>
                     <p className="mt-1 text-sm text-gray-600">{step.description}</p>
                     <div className="mt-3">
-                      {step.status === 'upcoming' ? (
-                        <span className="inline-flex items-center text-sm text-gray-400 cursor-not-allowed">
-                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                          </svg>
-                          Complete previous steps first
-                        </span>
-                      ) : (
-                        <Link href={step.href} className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                          step.status === 'current'
-                            ? 'text-white bg-[#0066FF] hover:bg-[#0052CC]'
+                      <Link href={step.href} className={`inline-flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        step.status === 'current'
+                          ? 'text-white bg-[#0066FF] hover:bg-[#0052CC]'
+                          : step.status === 'upcoming'
+                            ? 'text-blue-700 bg-blue-50 hover:bg-blue-100'
                             : 'text-green-700 bg-green-50 hover:bg-green-100'
-                        }`}>
-                          {step.status === 'current' ? 'Get Started →' : 'View →'}
-                        </Link>
-                      )}
+                      }`}>
+                        {step.ctaLabel ?? (step.status === 'current' ? 'Get Started →' : 'View →')}
+                      </Link>
                     </div>
                   </div>
                 </div>
