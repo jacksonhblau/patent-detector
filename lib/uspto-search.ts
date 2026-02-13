@@ -34,6 +34,107 @@ function getApiKey(): string {
 }
 
 /**
+ * Deep-extract a field value from an object, trying multiple paths
+ */
+function deepGet(obj: any, ...paths: string[]): string {
+  for (const path of paths) {
+    const parts = path.split('.');
+    let val = obj;
+    for (const part of parts) {
+      if (val == null) break;
+      val = val[part];
+    }
+    if (val != null && typeof val === 'string' && val.trim()) return val.trim();
+    if (val != null && typeof val === 'number') return String(val);
+  }
+  return '';
+}
+
+/**
+ * Extract all keys from an object up to 3 levels deep (for debugging)
+ */
+function getDeepKeys(obj: any, prefix = '', depth = 0): string[] {
+  if (depth > 3 || obj == null || typeof obj !== 'object') return [];
+  const keys: string[] = [];
+  for (const key of Object.keys(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    keys.push(fullKey);
+    if (!Array.isArray(obj[key]) && typeof obj[key] === 'object') {
+      keys.push(...getDeepKeys(obj[key], fullKey, depth + 1));
+    }
+  }
+  return keys;
+}
+
+/**
+ * Try to extract patent info from a single API result object,
+ * handling multiple USPTO response formats (old and new)
+ */
+function extractPatentFromResult(result: any): USPTOPatent | null {
+  // Try to find applicationNumberText in many possible locations
+  const appNum = deepGet(result,
+    'applicationNumberText',
+    'applicationMetaData.applicationNumberText',
+    'patentApplicationNumber',
+    'applicationNumber',
+    'applicationMetaData.applicationNumber',
+    'applicationMetaData.patentApplicationNumber',
+    'appNum',
+    'applicationDataBag.applicationNumberText',
+    'applicationDataBag.applicationNumber',
+    'patentFileWrapperIdentifier',
+    'applicationIdentifier',
+  );
+
+  if (!appNum) return null;
+
+  const metadata = result.applicationMetaData || result.applicationDataBag || result;
+
+  return {
+    applicationNumberText: appNum,
+    patentNumber: deepGet(result,
+      'patentNumber',
+      'applicationMetaData.patentNumber',
+      'patentGrantIdentifier',
+      'applicationDataBag.patentNumber',
+      'grantDocumentIdentifier',
+    ) || undefined,
+    patentTitle: deepGet(result,
+      'inventionTitle',
+      'applicationMetaData.inventionTitle',
+      'patentTitle',
+      'applicationMetaData.patentTitle',
+      'applicationDataBag.inventionTitle',
+      'titleOfInvention',
+    ) || undefined,
+    filingDate: deepGet(result,
+      'filingDate',
+      'applicationMetaData.filingDate',
+      'applicationDataBag.filingDate',
+      'applicationFilingDate',
+    ) || undefined,
+    grantDate: deepGet(result,
+      'grantDate',
+      'applicationMetaData.grantDate',
+      'applicationDataBag.grantDate',
+      'patentGrantDate',
+    ) || undefined,
+    applicants: metadata.applicantBag?.map((a: any) =>
+      a.applicantNameText || a.name || a.organizationName || ''
+    ).filter(Boolean) || [],
+    inventors: metadata.inventorBag?.map((i: any) =>
+      i.inventorNameText || i.name || ''
+    ).filter(Boolean) || [],
+    abstract: deepGet(result,
+      'abstract',
+      'applicationMetaData.inventionAbstract',
+      'inventionAbstract',
+      'applicationDataBag.abstract',
+    ) || undefined,
+  };
+}
+
+/**
  * Search USPTO for patents by company name
  */
 export async function searchUSPTOPatents(
@@ -50,6 +151,7 @@ export async function searchUSPTOPatents(
   }
 
   const allPatents: USPTOPatent[] = [];
+  const seenAppNums = new Set<string>();
 
   for (const companyName of companyNames) {
     try {
@@ -79,40 +181,51 @@ export async function searchUSPTOPatents(
       }
 
       const data = await response.json();
-      const results = data.results || [];
-      console.log(`   Found ${results.length} patents for ${companyName} (total: ${data.count || '?'})`);
-
-      for (const result of results) {
-        const metadata = result.applicationMetaData || {};
-        allPatents.push({
-          applicationNumberText: result.applicationNumberText || '',
-          patentNumber: metadata.patentNumber,
-          patentTitle: metadata.inventionTitle,
-          filingDate: metadata.filingDate,
-          grantDate: metadata.grantDate,
-          applicants: metadata.applicantBag?.map((a: any) => a.applicantNameText) || [],
-          inventors: metadata.inventorBag?.map((i: any) => i.inventorNameText) || [],
-          abstract: metadata.inventionAbstract,
-        });
+      
+      // Try all known response array locations
+      const results = data.results || data.patentFileWrapperDataBag || data.patents || data.data || [];
+      const total = data.count || data.totalCount || '?';
+      
+      // Log the first result's full structure for debugging
+      if (results.length > 0) {
+        const firstKeys = getDeepKeys(results[0]);
+        console.log(`   📊 Response has ${results.length} items (total: ${total})`);
+        console.log(`   📊 First result all keys: ${firstKeys.join(', ')}`);
+        
+        // Try to extract from first result as a test
+        const testExtract = extractPatentFromResult(results[0]);
+        if (!testExtract) {
+          console.log(`   ⚠️ Could not extract applicationNumberText from first result`);
+          console.log(`   📋 First result (full): ${JSON.stringify(results[0]).substring(0, 1500)}`);
+        } else {
+          console.log(`   ✅ Test extract OK: ${testExtract.applicationNumberText} — ${testExtract.patentTitle || 'no title'}`);
+        }
+      } else {
+        console.log(`   Found 0 results for ${companyName}`);
       }
+
+      let extracted = 0;
+      for (const result of results) {
+        const patent = extractPatentFromResult(result);
+        if (patent && !seenAppNums.has(patent.applicationNumberText)) {
+          seenAppNums.add(patent.applicationNumberText);
+          allPatents.push(patent);
+          extracted++;
+        }
+      }
+      console.log(`   ✅ Extracted ${extracted} patents from ${results.length} results for ${companyName}`);
+
     } catch (error) {
       console.error(`❌ Error searching USPTO for ${companyName}:`, error);
     }
   }
 
+  console.log(`   Found ${allPatents.length} total patents`);
   return allPatents;
 }
 
 /**
  * Fetch full patent XML from USPTO Bulk Data API
- * 
- * Tries both granted patent XML (PTGRXML-SPLT) and application XML (APPXML-SPLT).
- * Uses the datasets/products file search to discover the correct file path.
- * 
- * @param applicationNumber - The application number (e.g., "15456067")
- * @param patentNumber - Optional grant number (e.g., "10411897")
- * @param publicationNumber - Optional publication number (e.g., "20180260889")
- * @returns PatentXmlResult or null if no XML available
  */
 export async function fetchPatentXml(
   applicationNumber: string,
@@ -122,20 +235,12 @@ export async function fetchPatentXml(
   const apiKey = getApiKey();
   if (!apiKey) return null;
 
-  const appNum = applicationNumber.replace(/\D/g, ''); // strip non-digits
+  const appNum = applicationNumber.replace(/\D/g, '');
   
-  const headers = {
-    'X-API-KEY': apiKey,
-    'accept': 'application/xml',
-  };
-
-  // Strategy: search the datasets API for XML files matching this application
-  // Try PTGRXML (granted) first, then APPXML (published applications)
   const products = ['PTGRXML-SPLT', 'APPXML-SPLT'] as const;
   
   for (const product of products) {
     try {
-      // Search for files matching this application number
       const searchUrl = `${API_BASE}/datasets/products/files/${product}?applicationNumberText=${appNum}`;
       console.log(`   🔍 Searching ${product} for app ${appNum}...`);
       
@@ -144,7 +249,6 @@ export async function fetchPatentXml(
       });
       
       if (!searchRes.ok) {
-        // Try alternative search approach: query by patent number
         if (patentNumber && product === 'PTGRXML-SPLT') {
           const altUrl = `${API_BASE}/datasets/products/files/${product}?patentNumber=${patentNumber.replace(/\D/g, '')}`;
           const altRes = await fetch(altUrl, {
@@ -155,16 +259,11 @@ export async function fetchPatentXml(
           const files = altData?.files || altData?.results || [];
           if (files.length === 0) continue;
           
-          // Try to download the first matching XML file
           const xmlFile = files[0];
           const xmlUrl = xmlFile.url || xmlFile.fileUrl || `${API_BASE}/datasets/products/files/${product}/${xmlFile.path || xmlFile.filePath}`;
           const xmlResult = await tryFetchXml(xmlUrl, apiKey);
           if (xmlResult) {
-            console.log(`   ✅ Found XML via ${product} (patent number search)`);
-            return {
-              ...xmlResult,
-              product: product === 'PTGRXML-SPLT' ? 'PTGRXML' : 'APPXML',
-            };
+            return { ...xmlResult, product: product === 'PTGRXML-SPLT' ? 'PTGRXML' : 'APPXML' };
           }
         }
         continue;
@@ -174,18 +273,13 @@ export async function fetchPatentXml(
       const files = searchData?.files || searchData?.results || searchData?.productFiles || [];
       
       if (files.length > 0) {
-        // Found XML files — try to download
         for (const xmlFile of files.slice(0, 3)) {
           const xmlUrl = xmlFile.url || xmlFile.fileUrl 
             || `${API_BASE}/datasets/products/files/${product}/${xmlFile.path || xmlFile.filePath || xmlFile.fileName}`;
           
           const xmlResult = await tryFetchXml(xmlUrl, apiKey);
           if (xmlResult) {
-            console.log(`   ✅ Found XML via ${product}`);
-            return {
-              ...xmlResult,
-              product: product === 'PTGRXML-SPLT' ? 'PTGRXML' : 'APPXML',
-            };
+            return { ...xmlResult, product: product === 'PTGRXML-SPLT' ? 'PTGRXML' : 'APPXML' };
           }
         }
       }
@@ -194,8 +288,6 @@ export async function fetchPatentXml(
     }
   }
 
-  // Fallback: try constructing URLs directly based on known patterns
-  // Pattern: /files/{product}/{year}/{bundle}/{appNum}_{pubNum}.xml
   return await tryDirectXmlLookup(appNum, patentNumber, publicationNumber, apiKey);
 }
 
@@ -213,7 +305,12 @@ async function tryFetchXml(url: string, apiKey: string): Promise<{ xmlContent: s
     const xml = await res.text();
     if (!xml || xml.length < 100 || !xml.includes('<')) return null;
     
+    console.log(`   📄 Found XML: ${url.includes('PTGRXML') ? 'PTGRXML' : 'APPXML'}`);
+    console.log(`   🔗 XML URL: ${url}`);
+    console.log(`   🔑 Using API key: YES`);
+    console.log(`   📡 XML Response status: ${res.status}`);
     console.log(`   📝 XML length: ${xml.length} characters`);
+    
     const abstract = extractAbstractFromXml(xml);
     if (abstract) {
       console.log(`   ✅ Extracted abstract (${abstract.length} chars): ${abstract.substring(0, 100)}...`);
@@ -226,7 +323,7 @@ async function tryFetchXml(url: string, apiKey: string): Promise<{ xmlContent: s
 }
 
 /**
- * Try direct URL construction based on known USPTO bulk data patterns
+ * Try direct URL patterns for XML lookup
  */
 async function tryDirectXmlLookup(
   appNum: string,
@@ -236,7 +333,6 @@ async function tryDirectXmlLookup(
 ): Promise<PatentXmlResult | null> {
   if (!apiKey) return null;
 
-  // Try getting the full patent application details first to find document references
   try {
     const detailRes = await fetch(`${API_BASE}/patent/applications/${appNum}`, {
       headers: { 'X-API-KEY': apiKey, 'accept': 'application/json' },
@@ -245,35 +341,34 @@ async function tryDirectXmlLookup(
     if (detailRes.ok) {
       const detail = await detailRes.json();
       
-      // Look for XML document references in the response
-      const docs = detail?.documentBag || detail?.documents || [];
-      for (const doc of docs) {
-        if (doc.documentCategory === 'PTGRXML' || doc.documentCategory === 'APPXML' ||
-            (doc.url && doc.url.includes('.xml'))) {
-          const xmlUrl = doc.url || doc.documentUrl;
-          if (xmlUrl) {
-            const xmlResult = await tryFetchXml(xmlUrl, apiKey);
-            if (xmlResult) {
-              const product = xmlUrl.includes('PTGRXML') ? 'PTGRXML' : 'APPXML';
-              console.log(`   ✅ Found XML via application detail: ${product}`);
-              return { ...xmlResult, product };
+      for (const product of ['PTGRXML-SPLT', 'APPXML-SPLT'] as const) {
+        const searchUrl = `${API_BASE}/datasets/products/files/${product}?applicationNumberText=${appNum}`;
+        try {
+          const searchRes = await fetch(searchUrl, {
+            headers: { 'X-API-KEY': apiKey, 'accept': 'application/json' },
+          });
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const files = searchData?.files || searchData?.results || [];
+            for (const f of files.slice(0, 3)) {
+              const xmlUrl = f.url || f.fileUrl || `${API_BASE}/datasets/products/files/${product}/${f.path || f.filePath || f.fileName}`;
+              const xmlResult = await tryFetchXml(xmlUrl, apiKey);
+              if (xmlResult) {
+                return { ...xmlResult, product: product === 'PTGRXML-SPLT' ? 'PTGRXML' : 'APPXML' };
+              }
             }
           }
-        }
+        } catch { /* continue */ }
       }
       
-      // Try to extract filing date for constructing direct URLs
-      const filingDate = detail?.applicationMetaData?.filingDate 
-        || detail?.filingDate;
-      const grantDate = detail?.applicationMetaData?.grantDate 
-        || detail?.grantDate;
+      const filingDate = detail?.applicationMetaData?.filingDate || detail?.filingDate;
+      const grantDate = detail?.applicationMetaData?.grantDate || detail?.grantDate;
       const pn = patentNumber || detail?.applicationMetaData?.patentNumber;
       const pubNum = publicationNumber || detail?.applicationMetaData?.publicationNumber;
       
-      // Try constructing direct grant XML URL
       if (pn && grantDate) {
         const year = grantDate.substring(0, 4);
-        const dateStr = grantDate.replace(/-/g, '').substring(2, 8); // YYMMDD
+        const dateStr = grantDate.replace(/-/g, '').substring(2, 8);
         const bundle = `ipg${dateStr}`;
         const filename = `${appNum}_${pn.replace(/\D/g, '')}`;
         const directUrl = `${API_BASE}/datasets/products/files/PTGRXML-SPLT/${year}/${bundle}/${filename}.xml`;
@@ -283,7 +378,6 @@ async function tryDirectXmlLookup(
         if (xmlResult) return { ...xmlResult, product: 'PTGRXML' };
       }
       
-      // Try constructing direct application XML URL
       if (pubNum && filingDate) {
         const year = filingDate.substring(0, 4);
         const dateStr = filingDate.replace(/-/g, '').substring(2, 8);
@@ -305,10 +399,8 @@ async function tryDirectXmlLookup(
 
 /**
  * Extract abstract text from patent XML
- * Handles both grant XML and application XML formats
  */
 export function extractAbstractFromXml(xml: string): string {
-  // Try common XML patterns for abstract
   const patterns = [
     /<abstract[^>]*>([\s\S]*?)<\/abstract>/i,
     /<us-abstract[^>]*>([\s\S]*?)<\/us-abstract>/i,
@@ -318,7 +410,6 @@ export function extractAbstractFromXml(xml: string): string {
   for (const pattern of patterns) {
     const match = xml.match(pattern);
     if (match) {
-      // Strip XML tags from content
       const text = match[1]
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s+/g, ' ')
@@ -336,7 +427,6 @@ export function extractAbstractFromXml(xml: string): string {
 export function extractClaimsFromXml(xml: string): { number: number; type: string; text: string }[] {
   const claims: { number: number; type: string; text: string }[] = [];
   
-  // Match individual claim elements
   const claimPattern = /<claim[^>]*id="CLM-(\d+)"[^>]*>([\s\S]*?)<\/claim>/gi;
   let match;
   let claimNum = 0;
@@ -348,7 +438,6 @@ export function extractClaimsFromXml(xml: string): { number: number; type: strin
       .replace(/\s+/g, ' ')
       .trim();
     
-    // Determine if dependent (references another claim)
     const isDependent = /claim \d+/i.test(claimText) || /<claim-ref[^>]*>/i.test(match[2]);
     
     claims.push({
@@ -358,7 +447,6 @@ export function extractClaimsFromXml(xml: string): { number: number; type: strin
     });
   }
   
-  // Fallback: try <claims> block
   if (claims.length === 0) {
     const claimsBlock = xml.match(/<claims[^>]*>([\s\S]*?)<\/claims>/i);
     if (claimsBlock) {
@@ -422,14 +510,10 @@ export function parsePatentXml(xml: string): {
     return match ? match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
   };
   
-  // Title
   const title = getText(/<invention-title[^>]*>([\s\S]*?)<\/invention-title>/i)
     || getText(/<title-of-invention[^>]*>([\s\S]*?)<\/title-of-invention>/i);
   
-  // Inventors
   const inventors: string[] = [];
-  const inventorPattern = /<(?:inventor|given-name)[^>]*>([\s\S]*?)<\/(?:inventor|given-name)>/gi;
-  // Better approach: find inventor name pairs
   const lastNames = xml.match(/<family-name[^>]*>([\s\S]*?)<\/family-name>/gi) || [];
   const firstNames = xml.match(/<given-name[^>]*>([\s\S]*?)<\/given-name>/gi) || [];
   for (let i = 0; i < Math.max(lastNames.length, firstNames.length); i++) {
@@ -438,17 +522,11 @@ export function parsePatentXml(xml: string): {
     if (first || last) inventors.push(`${first} ${last}`.trim());
   }
   
-  // Assignee
   const assignee = getText(/<assignee[^>]*>[\s\S]*?<orgname[^>]*>([\s\S]*?)<\/orgname>/i)
     || getText(/<us-applicant[^>]*>[\s\S]*?<orgname[^>]*>([\s\S]*?)<\/orgname>/i);
   
-  // Filing date
   const filingDate = getText(/<filing-date[^>]*>([\s\S]*?)<\/filing-date>/i);
-  
-  // Application number
   const applicationNumber = getText(/<doc-number[^>]*>([\s\S]*?)<\/doc-number>/i);
-  
-  // Patent number (grant number)
   const patentNumber = getText(/<us-patent-grant[^>]*[^>]*doc-number="(\d+)"/i)
     || getText(/<publication-reference[^>]*>[\s\S]*?<doc-number[^>]*>([\s\S]*?)<\/doc-number>/i);
   
@@ -457,7 +535,7 @@ export function parsePatentXml(xml: string): {
     abstract: extractAbstractFromXml(xml),
     claims: extractClaimsFromXml(xml),
     description: extractDescriptionFromXml(xml),
-    inventors: inventors.slice(0, 20), // cap at 20
+    inventors: inventors.slice(0, 20),
     assignee,
     filingDate,
     applicationNumber,
