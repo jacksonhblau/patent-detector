@@ -117,6 +117,7 @@ export default function OnboardingPage() {
       setProgress('Processing your company patents in the background...');
       fetch('/api/onboarding/process-company', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           companyName: formData.companyName,
@@ -143,6 +144,7 @@ export default function OnboardingPage() {
     // Fire-and-forget: kick off processing in the background
     fetch('/api/onboarding/process-competitor', {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         companyName: formData.companyName,
