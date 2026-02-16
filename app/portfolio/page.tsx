@@ -116,6 +116,24 @@ export default function PortfolioPage() {
     }
   }
 
+  async function handleSignOut() {
+    try {
+      // Clear all localStorage data
+      localStorage.clear();
+
+      // Clear all sessionStorage data
+      sessionStorage.clear();
+
+      // Call logout API to clear server-side session and cookies
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('Error signing out:', error);
+    } finally {
+      // Always redirect to onboarding (full page reload clears remaining client state)
+      window.location.href = '/onboarding';
+    }
+  }
+
   const filteredPatents = useMemo(() => {
     if (!data) return [];
     let patents = [...data.patents];
@@ -181,7 +199,7 @@ export default function PortfolioPage() {
               <div className="text-left hidden sm:block"><p className="text-sm font-medium text-gray-900">Jackson Blau</p><p className="text-xs text-gray-500">jacksonhblau@gmail.com</p></div>
               <svg className={`w-4 h-4 text-gray-500 transition-transform ${accountMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </button>
-            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><a href="/billing" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Billing</a><hr className="my-2"/><a href="/onboarding" className="block px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</a></div>)}
+            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><a href="/billing" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Billing</a><hr className="my-2"/><button onClick={handleSignOut} className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</button></div>)}
           </div>
         </div>
       </header>

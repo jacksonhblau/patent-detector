@@ -15,6 +15,24 @@ interface TimelineStep {
 export default function DashboardPage() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
+  async function handleSignOut() {
+    try {
+      // Clear all localStorage data
+      localStorage.clear();
+
+      // Clear all sessionStorage data
+      sessionStorage.clear();
+
+      // Call logout API to clear server-side session and cookies
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('Error signing out:', error);
+    } finally {
+      // Always redirect to onboarding (full page reload clears remaining client state)
+      window.location.href = '/onboarding';
+    }
+  }
+
   const steps: TimelineStep[] = [
     {
       id: 1,
@@ -78,7 +96,7 @@ export default function DashboardPage() {
                 <a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a>
                 <a href="/billing" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Billing</a>
                 <hr className="my-2" />
-                <a href="/logout" className="block px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</a>
+                <button onClick={handleSignOut} className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</button>
               </div>
             )}
           </div>

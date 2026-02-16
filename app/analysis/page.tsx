@@ -150,6 +150,24 @@ export default function AnalysisPage() {
     }
   }
 
+  async function handleSignOut() {
+    try {
+      // Clear all localStorage data
+      localStorage.clear();
+
+      // Clear all sessionStorage data
+      sessionStorage.clear();
+
+      // Call logout API to clear server-side session and cookies
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (error) {
+      console.error('Error signing out:', error);
+    } finally {
+      // Always redirect to onboarding (full page reload clears remaining client state)
+      window.location.href = '/onboarding';
+    }
+  }
+
   if (loading) return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
       <div className="text-center">
@@ -195,7 +213,7 @@ export default function AnalysisPage() {
               <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">JB</div>
               <div className="text-left hidden sm:block"><p className="text-sm font-medium text-gray-900">Jackson Blau</p><p className="text-xs text-gray-500">jacksonhblau@gmail.com</p></div>
             </button>
-            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><hr className="my-2"/><a href="/logout" className="block px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</a></div>)}
+            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><hr className="my-2"/><button onClick={handleSignOut} className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</button></div>)}
           </div>
         </div>
       </header>
