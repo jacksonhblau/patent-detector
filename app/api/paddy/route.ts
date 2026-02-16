@@ -54,7 +54,7 @@ const patentIds = (patents || []).map((p: any) => p.id);
   );
 
   // 5. Competitor documents
-  const competitorIds = (competitors || []).map(c => c.id);
+  const competitorIds = (competitors || []).map((c: any) => c.id);
   let docs: any[] = [];
   if (competitorIds.length > 0) {
     const { data } = await supabaseAdmin.from('competitor_documents')
@@ -86,7 +86,7 @@ const patentIds = (patents || []).map((p: any) => p.id);
     titleGroups.get(key)!.push(p.application_number || p.patent_number || p.id);
   }
   for (const [title, apps] of titleGroups) {
-    const sample = patents?.find(p => p.title === title);
+    const sample = patents?.find((p: any) => p.title === title);
     sections.push(`• ${title} [${apps.length} filing(s): ${apps.slice(0, 3).join(', ')}${apps.length > 3 ? '...' : ''}]`);
     if (sample?.abstract) sections.push(`  Abstract: ${sample.abstract.slice(0, 300)}${sample.abstract.length > 300 ? '...' : ''}`);
     if (sample?.filing_date) sections.push(`  Filed: ${sample.filing_date}${sample.grant_date ? `, Granted: ${sample.grant_date}` : ''}`);
@@ -96,11 +96,11 @@ const patentIds = (patents || []).map((p: any) => p.id);
   if (claims.length > 0) {
     const patentClaims = new Map<string, number>();
     for (const c of claims) patentClaims.set(c.patent_id, (patentClaims.get(c.patent_id) || 0) + 1);
-    const indep = claims.filter(c => c.claim_type === 'independent');
+    const indep = claims.filter((c: any) => c.claim_type === 'independent');
     sections.push(`\n=== CLAIMS SUMMARY ===`);
     sections.push(`Total claims sampled: ${claims.length} across ${patentClaims.size} patents (${indep.length} independent)`);
     for (const c of indep.slice(0, 5)) {
-      const pat = patents?.find(p => p.id === c.patent_id);
+      const pat = patents?.find((p: any) => p.id === c.patent_id);
       sections.push(`\n[${pat?.title || 'Unknown patent'}, Claim ${c.claim_number}]:`);
       sections.push(c.claim_text?.slice(0, 400) || '(no text)');
     }
@@ -115,8 +115,8 @@ const patentIds = (patents || []).map((p: any) => p.id);
 
     for (const comp of competitors) {
       const compDocs = docsMap.get(comp.id) || [];
-      const products = compDocs.filter(d => d.document_type !== 'patent');
-      const compPatents = compDocs.filter(d => d.document_type === 'patent');
+      const products = compDocs.filter((d: any) => d.document_type !== 'patent');
+      const compPatents = compDocs.filter((d: any) => d.document_type === 'patent');
       const analysis = analysisMap.get(comp.id);
 
       sections.push(`\n--- ${comp.name} ---`);
@@ -124,8 +124,8 @@ const patentIds = (patents || []).map((p: any) => p.id);
       const descMatch = comp.notes?.match(/Description: (.+?)(?:\n|$)/);
       if (descMatch) sections.push(`Description: ${descMatch[1]}`);
       sections.push(`Products/Services: ${products.length}, Patents: ${compPatents.length}`);
-      if (products.length > 0) sections.push(`Products: ${products.map(d => d.document_name).join(', ')}`);
-      if (compPatents.length > 0) sections.push(`Their patents: ${compPatents.slice(0, 10).map(d => d.document_name).join(', ')}${compPatents.length > 10 ? ` (+${compPatents.length - 10} more)` : ''}`);
+      if (products.length > 0) sections.push(`Products: ${products.map((d: any) => d.document_name).join(', ')}`);
+      if (compPatents.length > 0) sections.push(`Their patents: ${compPatents.slice(0, 10).map((d: any) => d.document_name).join(', ')}${compPatents.length > 10 ? ` (+${compPatents.length - 10} more)` : ''}`);
 
       if (analysis) {
         const r = analysis.results || {};
@@ -207,7 +207,7 @@ FORMATTING RULES:
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1500,
         system: systemPrompt,
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
+        messages: messages.map((m: any) => ({ role: m.role, content: m.content })),
       }),
     });
 
