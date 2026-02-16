@@ -1,7 +1,13 @@
 'use client';
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { authFetch } from '@/lib/auth-fetch';
+
+// Lazy load PatentXmlViewer only when needed (reduces initial bundle size)
+const PatentXmlViewer = dynamic(() => import('@/app/components/PatentXmlViewer'), {
+  ssr: false,
+});
 
 interface Patent {
   id: string; patent_number: string; title: string; abstract: string; assignee: string;
@@ -38,6 +44,7 @@ export default function PortfolioPage() {
   const [addingState, setAddingState] = useState<Record<string, BtnState>>({});
   const [addResults, setAddResults] = useState<Record<string, AddResult>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [xmlViewerPatentId, setXmlViewerPatentId] = useState<string | null>(null);
 
   useEffect(() => { fetchPortfolio(); }, []);
 
@@ -174,7 +181,7 @@ export default function PortfolioPage() {
               <div className="text-left hidden sm:block"><p className="text-sm font-medium text-gray-900">Jackson Blau</p><p className="text-xs text-gray-500">jacksonhblau@gmail.com</p></div>
               <svg className={`w-4 h-4 text-gray-500 transition-transform ${accountMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
             </button>
-            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><a href="/billing" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Billing</a><hr className="my-2"/><a href="/logout" className="block px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</a></div>)}
+            {accountMenuOpen && (<div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg py-2 z-10 border border-gray-200"><a href="/settings" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Settings</a><a href="/billing" className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Billing</a><hr className="my-2"/><a href="/onboarding" className="block px-4 py-2 text-sm text-red-600 hover:bg-red-50">Sign Out</a></div>)}
           </div>
         </div>
       </header>
@@ -268,7 +275,20 @@ export default function PortfolioPage() {
                                 <div><p className="text-xs text-gray-400 uppercase tracking-wider">Inventors</p><p className="text-sm text-gray-700 mt-1">{patent.inventors||'—'}</p></div>
                                 <div><p className="text-xs text-gray-400 uppercase tracking-wider">Application #</p><p className="text-sm text-gray-700 mt-1 font-mono">{patent.application_number||'—'}</p></div>
                                 <div><p className="text-xs text-gray-400 uppercase tracking-wider">Grant Date</p><p className="text-sm text-gray-700 mt-1">{formatDate(patent.grant_date)}</p></div>
-                                <div><p className="text-xs text-gray-400 uppercase tracking-wider">Data Status</p><p className="text-sm text-gray-700 mt-1">{patent.has_full_text ? '✅ Full XML text available' : '⚠️ Metadata only'}</p></div>
+                                <div>
+                                  <p className="text-xs text-gray-400 uppercase tracking-wider">Data Status</p>
+                                  {patent.has_full_text ? (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setXmlViewerPatentId(patent.id); }}
+                                      className="text-sm text-blue-600 hover:text-blue-800 mt-1 font-medium underline decoration-dotted underline-offset-2 flex items-center space-x-1"
+                                    >
+                                      <span>✅ Full XML text available</span>
+                                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                                    </button>
+                                  ) : (
+                                    <p className="text-sm text-gray-700 mt-1">⚠️ Metadata only</p>
+                                  )}
+                                </div>
                               </div>
                             </div>
                             <div>
@@ -369,6 +389,15 @@ export default function PortfolioPage() {
             </>) : (<div className="text-center py-4"><div className="text-4xl mb-3">✅</div><h4 className="text-lg font-semibold text-gray-900 mb-2">Patent Added!</h4><div className="text-sm text-gray-600 space-y-1"><p>Patent: {uploadResult.patent?.patent_number}</p><p>Title: {uploadResult.patent?.title}</p><p>Claims Found: {uploadResult.patent?.claims_count}</p></div><p className="text-xs text-gray-400 mt-4">Refreshing portfolio...</p></div>)}
           </div>
         </div>
+      )}
+
+      {/* Patent XML Viewer Modal */}
+      {xmlViewerPatentId && (
+        <PatentXmlViewer
+          patentId={xmlViewerPatentId}
+          title={data?.patents.find(p => p.id === xmlViewerPatentId)?.title}
+          onClose={() => setXmlViewerPatentId(null)}
+        />
       )}
     </div>
   );
