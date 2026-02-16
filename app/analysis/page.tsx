@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth-fetch';
 
 interface Product {
   id: string; name: string; url: string; description: string; type: string;
@@ -73,13 +73,9 @@ export default function AnalysisPage() {
     if (!confirm(messages[type])) return;
     setDeletingId(id);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/delete', {
+      const res = await authFetch('/api/delete', {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, id }),
       });
       const json = await res.json();
@@ -99,10 +95,7 @@ export default function AnalysisPage() {
   async function fetchAnalysis() {
     try {
       setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/analysis', {
-        headers: { 'Authorization': `Bearer ${session?.access_token || ''}` },
-      });
+      const res = await authFetch('/api/analysis');
       const json = await res.json();
       if (json.success) { setData(json); setError(null); }
       else setError(json.error || 'Failed to load analysis');
@@ -116,13 +109,9 @@ export default function AnalysisPage() {
     setAdding(true);
     setAddResult(null);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/competitors/add-from-portfolio', {
+      const res = await authFetch('/api/competitors/add-from-portfolio', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ companyName: addName.trim(), patentCategory: 'Blockchain & Distributed Ledger Technology', sourcePatentId: 'analysis-page' }),
       });
       const json = await res.json();
@@ -140,13 +129,9 @@ export default function AnalysisPage() {
   async function analyzeExisting(competitorId: string, competitorName: string) {
     setAnalyzingId(competitorId);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/competitors/add-from-portfolio', {
+      const res = await authFetch('/api/competitors/add-from-portfolio', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           companyName: competitorName,
           patentCategory: 'Blockchain & Distributed Ledger Technology',

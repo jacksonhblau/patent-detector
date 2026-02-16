@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth-fetch';
 
 interface Patent {
   id: string; patent_number: string; title: string; abstract: string; assignee: string;
@@ -45,13 +45,9 @@ export default function PortfolioPage() {
     if (!confirm(`Delete patent "${title}"?\n\nThis will also remove any associated claims and analyses. This cannot be undone.`)) return;
     setDeletingId(patentId);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/delete', {
+      const res = await authFetch('/api/delete', {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'patent', id: patentId }),
       });
       const json = await res.json();
@@ -66,10 +62,7 @@ export default function PortfolioPage() {
   async function fetchPortfolio() {
     try {
       setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/portfolio', {
-        headers: { 'Authorization': `Bearer ${session?.access_token || ''}` },
-      });
+      const res = await authFetch('/api/portfolio');
       const json = await res.json();
       if (json.success) setData(json); else setError(json.error || 'Failed to load portfolio');
     } catch { setError('Network error loading portfolio'); } finally { setLoading(false); }
@@ -78,11 +71,9 @@ export default function PortfolioPage() {
   async function handleUpload() {
     if (!uploadFile) return; setUploading(true); setUploadError(null); setUploadResult(null);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
       const formData = new FormData(); formData.append('patent', uploadFile);
-      const res = await fetch('/api/patents/upload', {
+      const res = await authFetch('/api/patents/upload', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${session?.access_token || ''}` },
         body: formData
       });
       const json = await res.json();
@@ -94,13 +85,9 @@ export default function PortfolioPage() {
   async function handleAddCompetitor(name: string, patentId: string, category: string) {
     setAddingState(p => ({ ...p, [name]: 'adding' }));
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/competitors/add-from-portfolio', {
+      const res = await authFetch('/api/competitors/add-from-portfolio', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ companyName: name, patentCategory: category, sourcePatentId: patentId }),
       });
       const json = await res.json();

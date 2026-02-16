@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth-fetch';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -39,13 +39,9 @@ export default function PaddyChat() {
     setLoading(true);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/paddy', {
+      const res = await authFetch('/api/paddy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session?.access_token || ''}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: updated }),
       });
       const json = await res.json();
