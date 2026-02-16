@@ -3,42 +3,55 @@
  * 
  * Fetches user's patent portfolio from Supabase and enriches with
  * AI-generated potential infringer analysis and technology categorization.
+ * 
+ * Auth: Requires Bearer token in Authorization header.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase-admin';
+import { supabaseAdmin, getUserId } from '@/lib/supabase-server';
 
 export async function GET(request: NextRequest) {
   try {
-    const userId = '00000000-0000-0000-0000-000000000000'; // TODO: Auth
+    // ── Auth: get current user ──
+    const userId = await getUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-    // Fetch all patents for user's company
-    const { data: patents, error: patentsError } = await supabase
+    // Fetch all patents for THIS user
+    const { data: patents, error: patentsError } = await supabaseAdmin
       .from('patents')
       .select('*')
+      .eq('user_id', userId)
       .order('grant_date', { ascending: false, nullsFirst: false });
 
     if (patentsError) {
       throw new Error(`Failed to fetch patents: ${patentsError.message}`);
     }
 
-    // Fetch claims count per patent
-    const { data: claimsCounts, error: claimsError } = await supabase
-      .from('claims')
-      .select('patent_id');
+    // Fetch claims count per patent (only for this user's patents)
+    const patentIds = patents.map(p => p.id);
+    let claimsMap: Record<string, number> = {};
 
-    // Build claims count map
-    const claimsMap: Record<string, number> = {};
-    if (claimsCounts) {
-      for (const c of claimsCounts) {
-        claimsMap[c.patent_id] = (claimsMap[c.patent_id] || 0) + 1;
+    if (patentIds.length > 0) {
+      const { data: claimsCounts } = await supabaseAdmin
+        .from('claims')
+        .select('patent_id')
+        .in('patent_id', patentIds);
+
+      if (claimsCounts) {
+        for (const c of claimsCounts) {
+          claimsMap[c.patent_id] = (claimsMap[c.patent_id] || 0) + 1;
+        }
       }
     }
 
-    // Fetch company info
-    const { data: company } = await supabase
+    // Fetch company info for this user
+    const { data: company } = await supabaseAdmin
       .from('companies')
       .select('*')
+      .eq('user_id', userId)
+      .limit(1)
       .single();
 
     // Categorize patents by technology area based on title keywords

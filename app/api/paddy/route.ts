@@ -3,10 +3,12 @@
  * 
  * Gathers patent portfolio + competitor data from Supabase,
  * builds rich context for Claude, returns streamed response.
+ * 
+ * Auth: Requires Bearer token in Authorization header.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase-admin';
+import { supabaseAdmin, getUserId } from '@/lib/supabase-server';
 
 export const maxDuration = 60;
 
@@ -15,46 +17,66 @@ interface Message {
   content: string;
 }
 
-async function gatherContext(): Promise<string> {
+async function gatherContext(userId: string): Promise<string> {
   const sections: string[] = [];
 
-  // 1. Company info
-  const { data: companies } = await supabase
+  // 1. Company info (scoped to user)
+  const { data: companies } = await supabaseAdmin
     .from('companies')
     .select('name, aliases')
+    .eq('user_id', userId)
     .limit(1);
   const company = companies?.[0];
 
-  // 2. User patents
-  const { data: patents } = await supabase
+  // 2. User patents (scoped to user)
+  const { data: patents } = await supabaseAdmin
     .from('patents')
     .select('id, title, patent_number, application_number, abstract, filing_date, grant_date, status, assignee, inventors')
+    .eq('user_id', userId)
     .order('filing_date', { ascending: false })
     .limit(200);
 
-  // 3. Claims (sampled)
-  const { data: claims } = await supabase
-    .from('claims')
-    .select('patent_id, claim_number, claim_type, claim_text')
-    .limit(100);
+  // 3. Claims (only for this user's patents)
+  const patentIds = (patents || []).map(p => p.id);
+  let claims: any[] = [];
+  if (patentIds.length > 0) {
+    const { data: claimsData } = await supabaseAdmin
+      .from('claims')
+      .select('patent_id, claim_number, claim_type, claim_text')
+      .in('patent_id', patentIds)
+      .limit(100);
+    claims = claimsData || [];
+  }
 
-  // 4. Competitors
-  const { data: competitors } = await supabase
+  // 4. Competitors (scoped to user)
+  const { data: competitors } = await supabaseAdmin
     .from('competitors')
     .select('id, name, website, notes')
+    .eq('user_id', userId)
     .not('name', 'ilike', '%inveniam%')
     .order('created_at', { ascending: false });
 
-  // 5. Competitor documents
-  const { data: docs } = await supabase
-    .from('competitor_documents')
-    .select('competitor_id, document_name, document_type, source_url')
-    .limit(500);
+  // 5. Competitor documents (only for this user's competitors)
+  const competitorIds = (competitors || []).map(c => c.id);
+  let docs: any[] = [];
+  if (competitorIds.length > 0) {
+    const { data: docsData } = await supabaseAdmin
+      .from('competitor_documents')
+      .select('competitor_id, document_name, document_type, source_url')
+      .in('competitor_id', competitorIds)
+      .limit(500);
+    docs = docsData || [];
+  }
 
-  // 6. Analyses
-  const { data: analyses } = await supabase
-    .from('analyses')
-    .select('competitor_id, infringement_score, status, results');
+  // 6. Analyses (only for this user's competitors)
+  let analyses: any[] = [];
+  if (competitorIds.length > 0) {
+    const { data: analysesData } = await supabaseAdmin
+      .from('analyses')
+      .select('competitor_id, infringement_score, status, results')
+      .in('competitor_id', competitorIds);
+    analyses = analysesData || [];
+  }
 
   // --- Build context ---
 
@@ -82,7 +104,7 @@ async function gatherContext(): Promise<string> {
   }
 
   // Claims summary
-  if (claims && claims.length > 0) {
+  if (claims.length > 0) {
     const patentClaims = new Map<string, number>();
     for (const c of claims) {
       patentClaims.set(c.patent_id, (patentClaims.get(c.patent_id) || 0) + 1);
@@ -102,12 +124,12 @@ async function gatherContext(): Promise<string> {
   if (competitors && competitors.length > 0) {
     sections.push(`\n=== COMPETITORS (${competitors.length}) ===`);
     const docsMap = new Map<string, any[]>();
-    for (const d of (docs || [])) {
+    for (const d of docs) {
       if (!docsMap.has(d.competitor_id)) docsMap.set(d.competitor_id, []);
       docsMap.get(d.competitor_id)!.push(d);
     }
     const analysisMap = new Map<string, any>();
-    for (const a of (analyses || [])) {
+    for (const a of analyses) {
       analysisMap.set(a.competitor_id, a);
     }
 
@@ -158,6 +180,12 @@ async function gatherContext(): Promise<string> {
 
 export async function POST(request: NextRequest) {
   try {
+    // ── Auth: get current user ──
+    const userId = await getUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized — please sign in first' }, { status: 401 });
+    }
+
     const { messages } = (await request.json()) as { messages: Message[] };
 
     if (!messages || messages.length === 0) {
@@ -169,8 +197,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
     }
 
-    // Gather DB context
-    const dbContext = await gatherContext();
+    // Gather DB context scoped to this user
+    const dbContext = await gatherContext(userId);
 
     const systemPrompt = `You are Paddy the Patent Defender 🥊 — a sharp, confident, and slightly cheeky AI assistant who helps users understand and defend their patent portfolio. You fight for their IP rights like a champion fights in the ring.
 

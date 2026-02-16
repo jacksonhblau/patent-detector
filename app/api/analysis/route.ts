@@ -4,17 +4,26 @@
  * Reads pre-computed analysis from the analyses table.
  * Analysis is run when competitors are added (in add-from-portfolio endpoint),
  * NOT when this page is viewed.
+ * 
+ * Auth: Requires Bearer token in Authorization header.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase-admin';
+import { supabaseAdmin, getUserId } from '@/lib/supabase-server';
 
 export async function GET(request: NextRequest) {
   try {
-    // 1. Get all unique competitors (deduplicated by name, prefer one with notes)
-    const { data: allCompetitors, error: compError } = await supabase
+    // ── Auth: get current user ──
+    const userId = await getUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // 1. Get all unique competitors for THIS user (deduplicated by name, prefer one with notes)
+    const { data: allCompetitors, error: compError } = await supabaseAdmin
       .from('competitors')
       .select('*')
+      .eq('user_id', userId)
       .order('name');
 
     if (compError) throw new Error(`Failed to fetch competitors: ${compError.message}`);
@@ -49,13 +58,13 @@ export async function GET(request: NextRequest) {
 
     // 3. Fetch all competitor documents
     const allIds = Array.from(nameToIds.values()).flat();
-    const { data: allDocs } = await supabase
+    const { data: allDocs } = await supabaseAdmin
       .from('competitor_documents')
       .select('*')
       .in('competitor_id', allIds);
 
     // 4. Fetch all cached analyses
-    const { data: allAnalyses } = await supabase
+    const { data: allAnalyses } = await supabaseAdmin
       .from('analyses')
       .select('*')
       .in('competitor_id', allIds);
@@ -118,6 +127,7 @@ export async function GET(request: NextRequest) {
           overlapAreas,
         };
       });
+
       results.push({
         id: comp.id,
         name: comp.name,
