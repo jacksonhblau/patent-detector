@@ -406,8 +406,8 @@ CRITICAL: Only include URLs you actually found in search results. Every URL must
           // 2. Fetch the XML to get full abstract (same as user process)
           try {
             const apiKey = process.env.USPTO_API_KEY;
-            
-            const xmlResponse = await fetch(xmlUrl, {
+
+            const xmlResponse = await fetch(xmlUrl!, {
               headers: apiKey ? {
                 'X-API-KEY': apiKey,
                 'accept': 'application/xml',
