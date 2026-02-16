@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { authFetch } from '@/lib/auth-fetch';
 
 interface TimelineStep {
   id: number;
@@ -12,8 +13,34 @@ interface TimelineStep {
   icon: string;
 }
 
+interface PortfolioSummary {
+  total_patents: number;
+  company: { id: string; name: string } | null;
+}
+
 export default function DashboardPage() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [portfolioData, setPortfolioData] = useState<PortfolioSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchPortfolioSummary();
+  }, []);
+
+  async function fetchPortfolioSummary() {
+    try {
+      setLoading(true);
+      const res = await authFetch('/api/portfolio');
+      const json = await res.json();
+      if (json.success) {
+        setPortfolioData(json.summary);
+      }
+    } catch (error) {
+      console.error('Error fetching portfolio:', error);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSignOut() {
     try {
@@ -117,7 +144,13 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-lg font-semibold mb-1">Infringement Analysis Ready</h3>
-                <p className="text-blue-100 text-sm">AI has analyzed competitor products against your 97 patents — view infringement scores and settlement probabilities</p>
+                {loading ? (
+                  <p className="text-blue-100 text-sm">Loading portfolio data...</p>
+                ) : (
+                  <p className="text-blue-100 text-sm">
+                    AI has analyzed competitor products against {portfolioData?.company?.name ? `${portfolioData.company.name}'s` : 'your'} {portfolioData?.total_patents || 0} patents — view infringement scores and settlement probabilities
+                  </p>
+                )}
               </div>
               <div className="text-3xl">→</div>
             </div>
