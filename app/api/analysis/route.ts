@@ -102,8 +102,11 @@ export async function GET(request: NextRequest) {
         if (docKeywords.some(k => nameLower.includes(k))) overlapAreas.push('Document Verification');
         if (aiKeywords.some(k => nameLower.includes(k))) overlapAreas.push('AI/ML');
         return {
-          id: d.id, name: d.document_name || '', url: d.source_url || '',
-          applicationNumber: d.source_url?.match(/patent\/(\d+)/)?.[1] || '',
+          id: d.id,
+          name: d.document_name || '',
+          url: d.source_url || '',
+          applicationNumber: d.application_number || d.patent_number || '',
+          patentNumber: d.patent_number || '',
           overlapAreas,
         };
       });
