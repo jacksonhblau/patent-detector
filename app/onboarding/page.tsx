@@ -115,10 +115,14 @@ export default function OnboardingPage() {
 
     if (step === 1) {
       setProgress('Processing your company patents in the background...');
+      // Get the access token to authenticate the API call
+      const { data: { session } } = await supabase.auth.getSession();
       fetch('/api/onboarding/process-company', {
         method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token && { 'Authorization': `Bearer ${session.access_token}` }),
+        },
         body: JSON.stringify({
           companyName: formData.companyName,
           companyAliases: formData.companyAliases.split(',').map(a => a.trim()).filter(Boolean),
@@ -142,10 +146,14 @@ export default function OnboardingPage() {
     setError('');
 
     // Fire-and-forget: kick off processing in the background
+    // Get the access token to authenticate the API call
+    const { data: { session } } = await supabase.auth.getSession();
     fetch('/api/onboarding/process-competitor', {
       method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token && { 'Authorization': `Bearer ${session.access_token}` }),
+      },
       body: JSON.stringify({
         companyName: formData.companyName,
         competitors: validCompetitors.map(c => ({

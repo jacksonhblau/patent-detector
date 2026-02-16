@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { authFetch } from '@/lib/auth-fetch';
+import { supabase } from '@/lib/supabase';
 
 interface TimelineStep {
   id: number;
@@ -22,10 +23,35 @@ export default function DashboardPage() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [portfolioData, setPortfolioData] = useState<PortfolioSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState<string>('User');
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [userInitials, setUserInitials] = useState<string>('U');
 
   useEffect(() => {
     fetchPortfolioSummary();
+    fetchUserInfo();
   }, []);
+
+  async function fetchUserInfo() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const name = user.user_metadata?.name || user.user_metadata?.full_name || 'User';
+      const email = user.email || '';
+      setUserName(name);
+      setUserEmail(email);
+
+      // Generate initials from name or email
+      if (name !== 'User') {
+        const nameParts = name.split(' ');
+        const initials = nameParts.length > 1
+          ? `${nameParts[0][0]}${nameParts[1][0]}`.toUpperCase()
+          : name.substring(0, 2).toUpperCase();
+        setUserInitials(initials);
+      } else if (email) {
+        setUserInitials(email.substring(0, 2).toUpperCase());
+      }
+    }
+  }
 
   async function fetchPortfolioSummary() {
     try {
@@ -109,10 +135,10 @@ export default function DashboardPage() {
               onClick={() => setAccountMenuOpen(!accountMenuOpen)}
               className="flex items-center space-x-3 bg-gray-50 hover:bg-gray-100 rounded-lg px-4 py-2 transition-colors border border-gray-200"
             >
-              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">JB</div>
+              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">{userInitials}</div>
               <div className="text-left hidden sm:block">
-                <p className="text-sm font-medium text-gray-900">Jackson Blau</p>
-                <p className="text-xs text-gray-500">jacksonhblau@gmail.com</p>
+                <p className="text-sm font-medium text-gray-900">{userName}</p>
+                <p className="text-xs text-gray-500">{userEmail}</p>
               </div>
               <svg className={`w-4 h-4 text-gray-500 transition-transform ${accountMenuOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
