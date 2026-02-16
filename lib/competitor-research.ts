@@ -10,8 +10,10 @@
  * try to HTTP-call each other and fail on URL resolution.
  */
 
-import { supabase } from '@/lib/supabase-admin';
-import { searchUSPTOPatents, fetchPatentXml } from '@/lib/uspto-search';
+import { supabase } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+import { searchUSPTOPatents, extractAbstractFromXml, extractDescriptionFromXml } from '@/lib/uspto-search';
+import { getAssociatedDocuments } from '@/lib/uspto-patent-downloader';
 
 const PATENT_SUMMARY = `Inveniam Capital Partners holds 97+ patents covering:
 1. Blockchain & DLT - Load balancing, transaction sharding, import/export, multi-chain data backups
@@ -22,6 +24,18 @@ const PATENT_SUMMARY = `Inveniam Capital Partners holds 97+ patents covering:
 6. Financial Technology - Programmatic collateralization, asset valuation on blockchain
 7. IoT & Device Management - Device usage recordation to blockchains
 8. Distributed Computing - Transaction processing, blockchain sharding, consensus mechanisms`;
+
+/* ─── Admin Supabase client (bypasses RLS for server-side lookups) ─── */
+
+function getAdminClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!serviceKey) {
+    console.warn('⚠️ SUPABASE_SERVICE_ROLE_KEY not set — falling back to anon client');
+    return supabase;
+  }
+  return createClient(url, serviceKey);
+}
 
 /* ─── Claude helpers ─── */
 
@@ -38,7 +52,6 @@ async function callClaude(prompt: string, maxTokens = 3000, useWebSearch = false
     requestBody.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
   }
 
-  // Retry up to 4 times with exponential backoff for rate limits
   const maxRetries = 4;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -59,19 +72,16 @@ async function callClaude(prompt: string, maxTokens = 3000, useWebSearch = false
         .join('\n');
     }
 
-    // Rate limit — wait and retry
     if (res.status === 429 && attempt < maxRetries) {
-      // Check retry-after header, otherwise use exponential backoff
       const retryAfter = res.headers.get('retry-after');
       const waitMs = retryAfter
         ? parseInt(retryAfter) * 1000
-        : Math.min(30000 + (attempt * 30000), 120000); // 30s, 60s, 90s, 120s
+        : Math.min(30000 + (attempt * 30000), 120000);
       console.log(`⏳ Rate limited (attempt ${attempt + 1}/${maxRetries}). Waiting ${Math.round(waitMs / 1000)}s...`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
       continue;
     }
 
-    // Non-rate-limit error or final attempt — throw
     const errText = await res.text();
     throw new Error(`Claude API error ${res.status}: ${errText}`);
   }
@@ -135,6 +145,62 @@ async function fetchPageText(url: string): Promise<string> {
   }
 }
 
+/* ─── Resolve a real userId from the database ─── */
+
+async function resolveUserId(providedUserId?: string): Promise<string> {
+  if (providedUserId && providedUserId !== '00000000-0000-0000-0000-000000000000') {
+    return providedUserId;
+  }
+
+  const admin = getAdminClient();
+
+  const { data: competitors } = await admin
+    .from('competitors')
+    .select('user_id')
+    .not('user_id', 'eq', '00000000-0000-0000-0000-000000000000')
+    .limit(1);
+  if (competitors && competitors.length > 0 && competitors[0].user_id) {
+    return competitors[0].user_id;
+  }
+
+  const { data: patents } = await admin
+    .from('patents')
+    .select('user_id')
+    .not('user_id', 'eq', '00000000-0000-0000-0000-000000000000')
+    .limit(1);
+  if (patents && patents.length > 0 && patents[0].user_id) {
+    return patents[0].user_id;
+  }
+
+  const { data: companies } = await admin
+    .from('companies')
+    .select('user_id')
+    .not('user_id', 'eq', '00000000-0000-0000-0000-000000000000')
+    .limit(1);
+  if (companies && companies.length > 0 && companies[0].user_id) {
+    return companies[0].user_id;
+  }
+
+  throw new Error('No valid user_id found. Please sign in first so a user account exists.');
+}
+
+/* ─── Build Google Patents URL from identifiers (same logic as user patents) ─── */
+
+function buildGooglePatentsUrl(patentNumber?: string, applicationNumber?: string, title?: string): string {
+  // Prefer grant number (direct link), fall back to search by title
+  if (patentNumber && patentNumber !== applicationNumber) {
+    // Grant number like "11687916" → https://patents.google.com/patent/US11687916/en
+    const num = patentNumber.replace(/\D/g, '');
+    return `https://patents.google.com/patent/US${num}/en`;
+  }
+  // Fall back to title search (always works)
+  if (title) {
+    return `https://patents.google.com/?q=${encodeURIComponent(title)}`;
+  }
+  // Last resort: search by application number
+  return `https://patents.google.com/?q=${applicationNumber || 'unknown'}`;
+}
+
 /* ─── Main exported function ─── */
 
 export interface ResearchResult {
@@ -164,8 +230,9 @@ export async function researchAndAnalyzeCompetitor(opts: {
     patentCategory = 'Blockchain & Distributed Ledger Technology',
     sourcePatentId,
     existingCompetitorId,
-    userId = '00000000-0000-0000-0000-000000000000',
   } = opts;
+
+  const userId = await resolveUserId(opts.userId);
 
   let competitorId = existingCompetitorId || null;
   let competitorName = companyName;
@@ -291,56 +358,122 @@ CRITICAL: Only include URLs you actually found in search results. Every URL must
   }
   console.log(`📦 Saved ${productsAdded} products`);
 
-  // ─── Step 4: USPTO patent search + XML extraction ───
+  // ─── Step 4: USPTO patent search + associated documents ───
+  // This mirrors the EXACT same process as user patent discovery in
+  // lib/uspto-patent-downloader.ts processPatent(), just storing into
+  // competitor_documents instead of patents table.
   let patentsFound = 0;
   let xmlFetched = 0;
   try {
     const searchNames = [competitorName, ...(research.aliases || [])];
     const patents = await searchUSPTOPatents(searchNames);
     
-    // Process up to 15 patents, try XML for top 10
     for (let i = 0; i < Math.min(patents.length, 15); i++) {
       const pat = patents[i];
-      const fallbackUrl = `https://patents.google.com/patent/US${pat.patentNumber || pat.applicationNumberText}`;
       
-      // Skip duplicates
+      console.log(`\n📋 Processing competitor patent: ${pat.applicationNumberText}`);
+      console.log(`   Title: ${pat.patentTitle || 'Unknown'}`);
+
+      // Skip duplicates by application_number
       const { data: existingPat } = await supabase.from('competitor_documents')
         .select('id').eq('competitor_id', competitorId)
-        .or(`source_url.eq.${fallbackUrl},document_name.ilike.%${pat.applicationNumberText}%`)
+        .eq('application_number', pat.applicationNumberText)
         .limit(1);
-      if (existingPat && existingPat.length > 0) continue;
+      if (existingPat && existingPat.length > 0) {
+        console.log(`   ⏭️ Already exists, skipping`);
+        continue;
+      }
 
-      let sourceUrl = fallbackUrl;
-      let extractedText = pat.abstract || '';
-      let status = 'metadata_only';
-
-      // Try fetching actual XML for the first 10 patents
-      if (i < 10) {
-        try {
-          console.log(`📋 Processing competitor patent: ${pat.applicationNumberText}`);
-          const xmlResult = await fetchPatentXml(
-            pat.applicationNumberText,
-            pat.patentNumber,
-          );
+      // ── Same flow as processPatent() in uspto-patent-downloader.ts ──
+      
+      // 1. Fetch associated documents to get full text XML
+      const associatedDoc = await getAssociatedDocuments(pat.applicationNumberText);
+      
+      let fullAbstract = pat.abstract || '';
+      let xmlUrl: string | null = null;
+      let xmlContent: string | null = null;
+      let grantNumber: string | null = pat.patentNumber || null;
+      
+      if (associatedDoc) {
+        // Prefer grant document, fallback to PGPUB (same as user process)
+        const xmlMetadata = associatedDoc.grantDocumentMetaData || associatedDoc.pgpubDocumentMetaData;
+        
+        if (xmlMetadata?.fileLocationURI) {
+          xmlUrl = xmlMetadata.fileLocationURI;
+          console.log(`   📄 Found XML: ${xmlMetadata.productIdentifier}`);
+          console.log(`   🔗 XML URL: ${xmlUrl}`);
           
-          if (xmlResult) {
-            sourceUrl = xmlResult.xmlUrl;
-            // Store abstract from XML + first 2000 chars of description for analysis
-            const { extractDescriptionFromXml } = await import('@/lib/uspto-search');
-            const desc = xmlResult.xmlContent ? extractDescriptionFromXml(xmlResult.xmlContent) : '';
-            extractedText = [
-              xmlResult.abstract || pat.abstract || '',
-              desc ? `\n\n--- Description (excerpt) ---\n${desc.substring(0, 2000)}` : '',
-            ].join('');
-            status = 'xml_available';
-            xmlFetched++;
-            console.log(`   ✅ XML fetched for ${pat.applicationNumberText} (${xmlResult.product})`);
+          // 2. Fetch the XML to get full abstract (same as user process)
+          try {
+            const apiKey = process.env.USPTO_API_KEY;
+            
+            const xmlResponse = await fetch(xmlUrl, {
+              headers: apiKey ? {
+                'X-API-KEY': apiKey,
+                'accept': 'application/xml',
+              } : {},
+            });
+            
+            console.log(`   📡 XML Response status: ${xmlResponse.status}`);
+            
+            if (xmlResponse.ok) {
+              const xmlText = await xmlResponse.text();
+              console.log(`   📝 XML length: ${xmlText.length} characters`);
+              
+              xmlContent = xmlText;
+              
+              // 3. Extract abstract from XML (same regex as user process)
+              const abstractMatch = xmlText.match(/<abstract[^>]*>([\s\S]*?)<\/abstract>/i);
+              if (abstractMatch) {
+                fullAbstract = abstractMatch[1]
+                  .replace(/<[^>]+>/g, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                console.log(`   ✅ Extracted abstract (${fullAbstract.length} chars): ${fullAbstract.substring(0, 100)}...`);
+              }
+              
+              // Try to extract grant number from XML if we don't have one
+              if (!grantNumber) {
+                const grantMatch = xmlText.match(/<us-patent-grant[^>]*doc-number="(\d+)"/i)
+                  || xmlText.match(/<publication-reference[^>]*>[\s\S]*?<doc-number[^>]*>(\d+)<\/doc-number>/i);
+                if (grantMatch) {
+                  grantNumber = grantMatch[1];
+                  console.log(`   📋 Extracted grant number from XML: ${grantNumber}`);
+                }
+              }
+              
+              xmlFetched++;
+            } else {
+              const errorText = await xmlResponse.text();
+              console.log(`   ❌ XML fetch failed: ${xmlResponse.status} - ${errorText.substring(0, 200)}`);
+            }
+          } catch (xmlError) {
+            console.log(`   ❌ XML fetch error:`, xmlError);
           }
-        } catch (xmlErr) {
-          console.warn(`   ⚠️ XML fetch failed for ${pat.applicationNumberText}:`, xmlErr);
+        } else {
+          console.log(`   ⚠️ No XML URL available`);
+        }
+      } else {
+        console.log(`   ⚠️ No associated documents found`);
+      }
+
+      // 4. Build Google Patents URL for viewing (grant number → direct link)
+      const patentNumberForDb = grantNumber || pat.applicationNumberText;
+      const sourceUrl = buildGooglePatentsUrl(grantNumber || undefined, pat.applicationNumberText, pat.patentTitle);
+
+      // 5. Build extracted text for analysis (abstract + description excerpt)
+      let extractedText = fullAbstract;
+      if (xmlContent) {
+        const desc = extractDescriptionFromXml(xmlContent);
+        if (desc) {
+          extractedText = [
+            fullAbstract,
+            `\n\n--- Description (excerpt) ---\n${desc.substring(0, 2000)}`,
+          ].join('');
         }
       }
 
+      // 6. Store — same columns as patents table (patent_number, application_number)
       const { error } = await supabase.from('competitor_documents').insert({
         competitor_id: competitorId,
         source_url: sourceUrl,
@@ -348,12 +481,22 @@ CRITICAL: Only include URLs you actually found in search results. Every URL must
         document_type: 'patent',
         total_pages: 1,
         extracted_text: extractedText,
-        status,
+        status: xmlUrl ? 'xml_available' : 'metadata_only',
+        // Consistent with patents table columns:
+        patent_number: patentNumberForDb,
+        application_number: pat.applicationNumberText,
       });
-      if (!error) patentsFound++;
+      
+      if (!error) {
+        patentsFound++;
+        console.log(`   ✅ Patent saved: patent_number=${patentNumberForDb}, application_number=${pat.applicationNumberText}`);
+        console.log(`   🔗 View URL: ${sourceUrl}`);
+      } else {
+        console.error(`   ❌ Error saving patent:`, error.message);
+      }
     }
   } catch (err) { console.warn('USPTO search failed:', err); }
-  console.log(`📋 Found ${patentsFound} USPTO patents (${xmlFetched} with XML)`);
+  console.log(`\n📋 Found ${patentsFound} USPTO patents (${xmlFetched} with XML)`);
 
   // ─── Step 5: Gather all docs for analysis ───
   const { data: allDocs } = await supabase.from('competitor_documents')
@@ -377,7 +520,6 @@ CRITICAL: Only include URLs you actually found in search results. Every URL must
     .join('\n');
 
   // ─── Step 6: Run infringement analysis ───
-  // Proactive delay to avoid hitting 30k tokens/min rate limit
   console.log(`⏳ Waiting 60s for rate limit window to reset before analysis...`);
   await new Promise(resolve => setTimeout(resolve, 60000));
   console.log(`🤖 Running infringement analysis for ${competitorName}...`);
@@ -451,7 +593,6 @@ SCORING GUIDELINES:
     ? Math.round(productScores.reduce((s: number, v: number) => s + v, 0) / productScores.length)
     : 0;
 
-  // Validate sourcePatentId is a valid UUID before using it
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const validPatentId = sourcePatentId && uuidRegex.test(sourcePatentId) ? sourcePatentId : null;
 

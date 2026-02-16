@@ -12,6 +12,7 @@
 export interface USPTOPatent {
   applicationNumberText: string;
   patentNumber?: string;
+  publicationNumber?: string;
   patentTitle?: string;
   filingDate?: string;
   grantDate?: string;
@@ -99,6 +100,13 @@ function extractPatentFromResult(result: any): USPTOPatent | null {
       'applicationDataBag.patentNumber',
       'grantDocumentIdentifier',
     ) || undefined,
+    publicationNumber: deepGet(result,
+      'publicationNumber',
+      'applicationMetaData.publicationNumber',
+      'applicationDataBag.publicationNumber',
+      'pgpubDocumentIdentifier',
+      'publicationDocumentIdentifier',
+    ) || undefined,
     patentTitle: deepGet(result,
       'inventionTitle',
       'applicationMetaData.inventionTitle',
@@ -135,6 +143,99 @@ function extractPatentFromResult(result: any): USPTOPatent | null {
 }
 
 /**
+ * Build a working Google Patents URL for a patent.
+ * 
+ * Priority:
+ *   1. Grant number → https://patents.google.com/patent/US{grantNumber}/en (direct link)
+ *   2. Publication number → https://patents.google.com/patent/{pubNumber}/en (direct link)  
+ *   3. Application number is NOT usable for direct links on Google Patents
+ *      So fall back to title-based search URL (always works, shows results list)
+ */
+export function buildGooglePatentsUrl(patent: {
+  patentNumber?: string;
+  publicationNumber?: string;
+  applicationNumberText?: string;
+  patentTitle?: string;
+}): string {
+  // 1. Best: use grant number (e.g. US11687916 → direct patent page)
+  if (patent.patentNumber) {
+    const num = patent.patentNumber.replace(/\D/g, '');
+    if (num) {
+      return `https://patents.google.com/patent/US${num}/en`;
+    }
+  }
+
+  // 2. Good: use publication number (e.g. US20210123456A1 → direct patent page)
+  if (patent.publicationNumber) {
+    // Publication numbers may already have the "US" prefix and suffix like "A1"/"B2"
+    let pubNum = patent.publicationNumber;
+    if (!pubNum.startsWith('US')) pubNum = `US${pubNum}`;
+    // Remove any spaces or dashes for clean URL
+    pubNum = pubNum.replace(/[\s-]/g, '');
+    return `https://patents.google.com/patent/${pubNum}/en`;
+  }
+
+  // 3. Fallback: search by title (shows results page, but always works)
+  if (patent.patentTitle) {
+    return `https://patents.google.com/?q=${encodeURIComponent(patent.patentTitle)}`;
+  }
+
+  // 4. Last resort: search by application number
+  if (patent.applicationNumberText) {
+    return `https://patents.google.com/?q=${encodeURIComponent(patent.applicationNumberText)}`;
+  }
+
+  return '';
+}
+
+/**
+ * Resolve patent identifiers by calling the USPTO detail endpoint.
+ * This fills in patentNumber and publicationNumber if they're missing from search results.
+ */
+export async function resolvePatentIdentifiers(
+  patent: USPTOPatent
+): Promise<USPTOPatent> {
+  // If we already have a grant number, no need to call the detail endpoint
+  if (patent.patentNumber) return patent;
+
+  const apiKey = getApiKey();
+  if (!apiKey) return patent;
+
+  try {
+    const appNum = patent.applicationNumberText.replace(/\D/g, '');
+    console.log(`   🔍 Resolving identifiers for app ${appNum}...`);
+    
+    const response = await fetch(
+      `${API_BASE}/patent/applications/${appNum}`,
+      {
+        headers: { 'X-API-KEY': apiKey, 'accept': 'application/json' },
+      }
+    );
+
+    if (!response.ok) return patent;
+
+    const detail = await response.json();
+    const md = detail?.applicationMetaData || detail;
+
+    const resolvedPatentNumber = md?.patentNumber || md?.grantDocumentIdentifier || undefined;
+    const resolvedPubNumber = md?.publicationNumber || md?.pgpubDocumentIdentifier || undefined;
+
+    console.log(`   📋 Resolved: grant=${resolvedPatentNumber || 'none'}, pub=${resolvedPubNumber || 'none'}`);
+
+    return {
+      ...patent,
+      patentNumber: patent.patentNumber || resolvedPatentNumber,
+      publicationNumber: patent.publicationNumber || resolvedPubNumber,
+      // Also pick up any other missing fields
+      grantDate: patent.grantDate || md?.grantDate || undefined,
+    };
+  } catch (err) {
+    console.warn(`   ⚠️ Could not resolve identifiers for ${patent.applicationNumberText}:`, err);
+    return patent;
+  }
+}
+
+/**
  * Search USPTO for patents by company name
  */
 export async function searchUSPTOPatents(
@@ -153,11 +254,25 @@ export async function searchUSPTOPatents(
   const allPatents: USPTOPatent[] = [];
   const seenAppNums = new Set<string>();
 
+  // Helper: check if a patent's applicants match the company name (case-insensitive)
+  const nameMatchesApplicant = (patent: USPTOPatent, names: string[]): boolean => {
+    const applicantStr = (patent.applicants || []).join(' ').toLowerCase();
+    const inventorStr = (patent.inventors || []).join(' ').toLowerCase();
+    const combined = applicantStr + ' ' + inventorStr;
+    return names.some(n => {
+      const lower = n.toLowerCase();
+      // Check if any word from the company name appears in applicants/inventors
+      const words = lower.split(/\s+/).filter(w => w.length > 2);
+      return combined.includes(lower) || words.every(w => combined.includes(w));
+    });
+  };
+
   for (const companyName of companyNames) {
     try {
       console.log(`🔍 Searching USPTO for: ${companyName}`);
 
-      const response = await fetch(
+      // Strategy 1: Filter by applicant name (most precise)
+      let response = await fetch(
         `${API_BASE}/patent/applications/search`,
         {
           method: 'POST',
@@ -167,53 +282,87 @@ export async function searchUSPTOPatents(
             'accept': 'application/json',
           },
           body: JSON.stringify({
-            q: `${companyName}`,
+            q: '*',
+            filters: [
+              { name: 'firstApplicantName', value: [companyName] },
+            ],
             pagination: { offset: 0, limit: 25 },
             sort: [{ field: 'applicationMetaData.filingDate', order: 'desc' }],
           }),
         }
       );
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ USPTO API error for ${companyName}:`, response.status, errorText);
-        continue;
+      let data: any = null;
+      let results: any[] = [];
+      let searchStrategy = 'applicant-filter';
+
+      if (response.ok) {
+        data = await response.json();
+        results = data.results || data.patentFileWrapperDataBag || data.patents || data.data || [];
       }
 
-      const data = await response.json();
-      
-      // Try all known response array locations
-      const results = data.results || data.patentFileWrapperDataBag || data.patents || data.data || [];
-      const total = data.count || data.totalCount || '?';
-      
-      // Log the first result's full structure for debugging
-      if (results.length > 0) {
-        const firstKeys = getDeepKeys(results[0]);
-        console.log(`   📊 Response has ${results.length} items (total: ${total})`);
-        console.log(`   📊 First result all keys: ${firstKeys.join(', ')}`);
+      // Strategy 2: If filter returned 0, try quoted phrase search + post-filter
+      if (results.length === 0) {
+        console.log(`   📋 No results with applicant filter, trying quoted phrase search...`);
+        searchStrategy = 'quoted-phrase';
         
-        // Try to extract from first result as a test
+        response = await fetch(
+          `${API_BASE}/patent/applications/search`,
+          {
+            method: 'POST',
+            headers: {
+              'X-API-KEY': apiKey,
+              'Content-Type': 'application/json',
+              'accept': 'application/json',
+            },
+            body: JSON.stringify({
+              q: `"${companyName}"`,
+              pagination: { offset: 0, limit: 25 },
+              sort: [{ field: 'applicationMetaData.filingDate', order: 'desc' }],
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`❌ USPTO API error for ${companyName}:`, response.status, errorText);
+          continue;
+        }
+
+        data = await response.json();
+        results = data.results || data.patentFileWrapperDataBag || data.patents || data.data || [];
+      }
+
+      const total = data?.count || data?.totalCount || '?';
+
+      if (results.length > 0) {
+        console.log(`   📊 Response has ${results.length} items (total: ${total}) [strategy: ${searchStrategy}]`);
+        
         const testExtract = extractPatentFromResult(results[0]);
-        if (!testExtract) {
-          console.log(`   ⚠️ Could not extract applicationNumberText from first result`);
-          console.log(`   📋 First result (full): ${JSON.stringify(results[0]).substring(0, 1500)}`);
-        } else {
-          console.log(`   ✅ Test extract OK: ${testExtract.applicationNumberText} — ${testExtract.patentTitle || 'no title'}`);
+        if (testExtract) {
+          console.log(`   ✅ First result: ${testExtract.applicationNumberText} — ${testExtract.patentTitle || 'no title'}`);
+          console.log(`   👤 Applicants: ${testExtract.applicants?.join(', ') || 'none'}`);
         }
       } else {
         console.log(`   Found 0 results for ${companyName}`);
       }
 
       let extracted = 0;
+      let filtered = 0;
       for (const result of results) {
         const patent = extractPatentFromResult(result);
         if (patent && !seenAppNums.has(patent.applicationNumberText)) {
+          // Post-filter: only keep patents where the applicant actually matches
+          if (searchStrategy === 'quoted-phrase' && !nameMatchesApplicant(patent, companyNames)) {
+            filtered++;
+            continue;
+          }
           seenAppNums.add(patent.applicationNumberText);
           allPatents.push(patent);
           extracted++;
         }
       }
-      console.log(`   ✅ Extracted ${extracted} patents from ${results.length} results for ${companyName}`);
+      console.log(`   ✅ Extracted ${extracted} patents from ${results.length} results for ${companyName}${filtered > 0 ? ` (${filtered} filtered out as non-matching)` : ''}`);
 
     } catch (error) {
       console.error(`❌ Error searching USPTO for ${companyName}:`, error);

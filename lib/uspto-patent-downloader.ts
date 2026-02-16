@@ -32,7 +32,7 @@ interface DocumentsResponse {
 /**
  * Get associated documents (XML files with full text, abstract, claims)
  */
-async function getAssociatedDocuments(
+export async function getAssociatedDocuments(
   applicationNumber: string
 ): Promise<any | null> {
   const apiKey = process.env.USPTO_API_KEY;
