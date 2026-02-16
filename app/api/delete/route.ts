@@ -6,7 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase-admin';
 
 const VALID_TYPES = ['patent', 'competitor', 'competitor_document'] as const;
 type DeleteType = typeof VALID_TYPES[number];

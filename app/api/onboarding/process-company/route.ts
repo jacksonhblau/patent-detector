@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase-admin';
 import { discoverCompanyPatents } from '@/lib/uspto-patent-downloader';
 
 interface ProcessCompanyRequest {

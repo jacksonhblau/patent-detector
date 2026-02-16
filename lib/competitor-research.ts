@@ -10,7 +10,7 @@
  * try to HTTP-call each other and fail on URL resolution.
  */
 
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase-admin';
 import { searchUSPTOPatents, fetchPatentXml } from '@/lib/uspto-search';
 
 const PATENT_SUMMARY = `Inveniam Capital Partners holds 97+ patents covering:

@@ -5,7 +5,7 @@
  * shared researchAndAnalyzeCompetitor() directly (no self-fetch).
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase-admin';
 import { researchAndAnalyzeCompetitor } from '@/lib/competitor-research';
 
 interface SingleCompetitor {
