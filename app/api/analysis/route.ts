@@ -2,10 +2,7 @@
  * Infringement Analysis API (READ-ONLY)
  * 
  * Reads pre-computed analysis from the analyses table.
- * Analysis is run when competitors are added (in add-from-portfolio endpoint),
- * NOT when this page is viewed.
- * 
- * Auth: Requires Bearer token in Authorization header.
+ * Analysis is run when competitors are added, NOT when this page is viewed.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,19 +10,14 @@ import { supabaseAdmin, getUserId } from '@/lib/supabase-server';
 
 export async function GET(request: NextRequest) {
   try {
-    // ── Auth: get current user ──
+    // Try to identify user (optional — won't block if absent)
     const userId = await getUserId(request);
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
 
-    // 1. Get all unique competitors for THIS user (deduplicated by name, prefer one with notes)
-    const { data: allCompetitors, error: compError } = await supabaseAdmin
-      .from('competitors')
-      .select('*')
-      .eq('user_id', userId)
-      .order('name');
+    // 1. Get all competitors (scoped to user if identified)
+    let compQuery = supabaseAdmin.from('competitors').select('*').order('name');
+    if (userId) compQuery = compQuery.eq('user_id', userId);
 
+    const { data: allCompetitors, error: compError } = await compQuery;
     if (compError) throw new Error(`Failed to fetch competitors: ${compError.message}`);
 
     // Deduplicate by name, keep the one with the most notes
@@ -81,18 +73,13 @@ export async function GET(request: NextRequest) {
       const key = comp.name.toLowerCase().trim();
       const relatedIds = nameToIds.get(key) || [comp.id];
 
-      // Gather docs from all duplicate competitor entries
       const docs = (allDocs || []).filter((d: any) => relatedIds.includes(d.competitor_id));
       const seen = new Set<string>();
       const uniqueDocs: any[] = [];
       for (const d of docs) {
-        if (!seen.has(d.document_name)) {
-          seen.add(d.document_name);
-          uniqueDocs.push(d);
-        }
+        if (!seen.has(d.document_name)) { seen.add(d.document_name); uniqueDocs.push(d); }
       }
 
-      // Find cached analysis (check all related IDs)
       let analysis: any = null;
       for (const id of relatedIds) {
         if (analysisMap.has(id)) { analysis = analysisMap.get(id); break; }
@@ -101,37 +88,28 @@ export async function GET(request: NextRequest) {
       const productDocs = uniqueDocs.filter((d: any) => ['product_page', 'product_service', 'pdf', 'uploaded'].includes(d.document_type));
       const patentDocs = uniqueDocs.filter((d: any) => d.document_type === 'patent');
 
-      // Extract description/aliases from notes
       const descMatch = comp.notes?.match(/Description: (.+?)(?:\n|$)/);
       const aliasMatch = comp.notes?.match(/Aliases: (.+?)(?:\n|$)/);
 
-      // Build competitor patents list with overlap detection
+      const blockchainKeywords = ['blockchain', 'distributed ledger', 'smart contract', 'cryptocurrency', 'token', 'consensus', 'hash', 'merkle', 'mining', 'proof of work', 'proof-of-work', 'stablecoin', 'defi', 'decentralized'];
+      const docKeywords = ['document', 'validation', 'verification', 'authentication', 'audit', 'mortgage', 'due diligence', 'electronic document'];
+      const aiKeywords = ['artificial intelligence', 'machine learning', 'federated learning', 'neural network'];
+
       const competitorPatents = patentDocs.map((d: any) => {
-        const patentName = d.document_name || '';
-        // Simple keyword overlap with user's patent categories
-        const blockchainKeywords = ['blockchain', 'distributed ledger', 'smart contract', 'cryptocurrency', 'token', 'consensus', 'hash', 'merkle', 'mining', 'proof of work', 'proof-of-work', 'stablecoin', 'defi', 'decentralized'];
-        const docKeywords = ['document', 'validation', 'verification', 'authentication', 'audit', 'mortgage', 'due diligence', 'electronic document'];
-        const aiKeywords = ['artificial intelligence', 'machine learning', 'federated learning', 'neural network'];
-        
-        const nameLower = patentName.toLowerCase();
+        const nameLower = (d.document_name || '').toLowerCase();
         const overlapAreas: string[] = [];
         if (blockchainKeywords.some(k => nameLower.includes(k))) overlapAreas.push('Blockchain');
         if (docKeywords.some(k => nameLower.includes(k))) overlapAreas.push('Document Verification');
         if (aiKeywords.some(k => nameLower.includes(k))) overlapAreas.push('AI/ML');
-        
         return {
-          id: d.id,
-          name: patentName,
-          url: d.source_url || '',
+          id: d.id, name: d.document_name || '', url: d.source_url || '',
           applicationNumber: d.source_url?.match(/patent\/(\d+)/)?.[1] || '',
           overlapAreas,
         };
       });
 
       results.push({
-        id: comp.id,
-        name: comp.name,
-        website: comp.website,
+        id: comp.id, name: comp.name, website: comp.website,
         description: descMatch?.[1] || '',
         aliases: aliasMatch?.[1]?.split(', ').filter(Boolean) || [],
         createdAt: comp.created_at,
@@ -140,10 +118,8 @@ export async function GET(request: NextRequest) {
         patentDocuments: patentDocs.length,
         competitorPatents,
         analysisStatus: analysis ? 'complete' : 'pending',
-        // Products: use analysis results as primary source, fall back to docs
         products: analysis?.products?.length
           ? analysis.products.map((ap: any) => {
-              // Try to find matching doc for URL/description enrichment
               const matchingDoc = productDocs.find((d: any) =>
                 d.document_name.toLowerCase() === ap.name.toLowerCase()
                 || d.document_name.toLowerCase().includes(ap.name.toLowerCase())
@@ -161,14 +137,9 @@ export async function GET(request: NextRequest) {
               };
             })
           : productDocs.map((d: any) => ({
-              id: d.id,
-              name: d.document_name,
-              url: d.source_url,
-              description: d.extracted_text || '',
-              type: d.document_type,
-              infringementProbability: null,
-              relevantPatents: [],
-              reasoning: '',
+              id: d.id, name: d.document_name, url: d.source_url,
+              description: d.extracted_text || '', type: d.document_type,
+              infringementProbability: null, relevantPatents: [], reasoning: '',
             })),
         settlementProbability: analysis?.settlementProbability ?? null,
         settlementFactors: analysis?.settlementFactors ?? [],
@@ -179,18 +150,13 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Sort by overall risk (highest infringement first), pending at bottom
     results.sort((a, b) => {
       if (a.analysisStatus === 'pending' && b.analysisStatus !== 'pending') return 1;
       if (b.analysisStatus === 'pending' && a.analysisStatus !== 'pending') return -1;
       return (b.overallInfringementScore ?? 0) - (a.overallInfringementScore ?? 0);
     });
 
-    return NextResponse.json({
-      success: true,
-      totalCompetitors: results.length,
-      results,
-    });
+    return NextResponse.json({ success: true, totalCompetitors: results.length, results });
 
   } catch (error) {
     console.error('❌ Analysis API error:', error);

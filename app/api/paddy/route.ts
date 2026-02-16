@@ -2,9 +2,7 @@
  * Paddy the Patent Defender — Chat API
  * 
  * Gathers patent portfolio + competitor data from Supabase,
- * builds rich context for Claude, returns streamed response.
- * 
- * Auth: Requires Bearer token in Authorization header.
+ * builds rich context for Claude, returns response.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -17,75 +15,69 @@ interface Message {
   content: string;
 }
 
-async function gatherContext(userId: string): Promise<string> {
+async function gatherContext(userId: string | null): Promise<string> {
   const sections: string[] = [];
 
-  // 1. Company info (scoped to user)
-  const { data: companies } = await supabaseAdmin
-    .from('companies')
-    .select('name, aliases')
-    .eq('user_id', userId)
-    .limit(1);
+  // Helper: optionally scope queries to user
+  const scopeUser = (query: any) => userId ? query.eq('user_id', userId) : query;
+
+  // 1. Company info
+  const { data: companies } = await scopeUser(
+    supabaseAdmin.from('companies').select('name, aliases')
+  ).limit(1);
   const company = companies?.[0];
 
-  // 2. User patents (scoped to user)
-  const { data: patents } = await supabaseAdmin
-    .from('patents')
-    .select('id, title, patent_number, application_number, abstract, filing_date, grant_date, status, assignee, inventors')
-    .eq('user_id', userId)
-    .order('filing_date', { ascending: false })
-    .limit(200);
+  // 2. User patents
+  const { data: patents } = await scopeUser(
+    supabaseAdmin.from('patents')
+      .select('id, title, patent_number, application_number, abstract, filing_date, grant_date, status, assignee, inventors')
+      .order('filing_date', { ascending: false })
+  ).limit(200);
 
-  // 3. Claims (only for this user's patents)
+  // 3. Claims (scoped to user's patents)
   const patentIds = (patents || []).map(p => p.id);
   let claims: any[] = [];
   if (patentIds.length > 0) {
-    const { data: claimsData } = await supabaseAdmin
-      .from('claims')
+    const { data } = await supabaseAdmin.from('claims')
       .select('patent_id, claim_number, claim_type, claim_text')
       .in('patent_id', patentIds)
       .limit(100);
-    claims = claimsData || [];
+    claims = data || [];
   }
 
-  // 4. Competitors (scoped to user)
-  const { data: competitors } = await supabaseAdmin
-    .from('competitors')
-    .select('id, name, website, notes')
-    .eq('user_id', userId)
-    .not('name', 'ilike', '%inveniam%')
-    .order('created_at', { ascending: false });
+  // 4. Competitors
+  const { data: competitors } = await scopeUser(
+    supabaseAdmin.from('competitors')
+      .select('id, name, website, notes')
+      .not('name', 'ilike', '%inveniam%')
+      .order('created_at', { ascending: false })
+  );
 
-  // 5. Competitor documents (only for this user's competitors)
+  // 5. Competitor documents
   const competitorIds = (competitors || []).map(c => c.id);
   let docs: any[] = [];
   if (competitorIds.length > 0) {
-    const { data: docsData } = await supabaseAdmin
-      .from('competitor_documents')
+    const { data } = await supabaseAdmin.from('competitor_documents')
       .select('competitor_id, document_name, document_type, source_url')
       .in('competitor_id', competitorIds)
       .limit(500);
-    docs = docsData || [];
+    docs = data || [];
   }
 
-  // 6. Analyses (only for this user's competitors)
+  // 6. Analyses
   let analyses: any[] = [];
   if (competitorIds.length > 0) {
-    const { data: analysesData } = await supabaseAdmin
-      .from('analyses')
+    const { data } = await supabaseAdmin.from('analyses')
       .select('competitor_id, infringement_score, status, results')
       .in('competitor_id', competitorIds);
-    analyses = analysesData || [];
+    analyses = data || [];
   }
 
   // --- Build context ---
-
-  // Company
   if (company) {
     sections.push(`COMPANY: ${company.name}${company.aliases?.length ? ` (aliases: ${company.aliases.join(', ')})` : ''}`);
   }
 
-  // Patents summary
   sections.push(`\n=== PATENT PORTFOLIO (${patents?.length || 0} patents) ===`);
   const titleGroups = new Map<string, string[]>();
   for (const p of (patents || [])) {
@@ -96,23 +88,17 @@ async function gatherContext(userId: string): Promise<string> {
   for (const [title, apps] of titleGroups) {
     const sample = patents?.find(p => p.title === title);
     sections.push(`• ${title} [${apps.length} filing(s): ${apps.slice(0, 3).join(', ')}${apps.length > 3 ? '...' : ''}]`);
-    if (sample?.abstract) {
-      sections.push(`  Abstract: ${sample.abstract.slice(0, 300)}${sample.abstract.length > 300 ? '...' : ''}`);
-    }
+    if (sample?.abstract) sections.push(`  Abstract: ${sample.abstract.slice(0, 300)}${sample.abstract.length > 300 ? '...' : ''}`);
     if (sample?.filing_date) sections.push(`  Filed: ${sample.filing_date}${sample.grant_date ? `, Granted: ${sample.grant_date}` : ''}`);
     if (sample?.status) sections.push(`  Status: ${sample.status}`);
   }
 
-  // Claims summary
   if (claims.length > 0) {
     const patentClaims = new Map<string, number>();
-    for (const c of claims) {
-      patentClaims.set(c.patent_id, (patentClaims.get(c.patent_id) || 0) + 1);
-    }
+    for (const c of claims) patentClaims.set(c.patent_id, (patentClaims.get(c.patent_id) || 0) + 1);
     const indep = claims.filter(c => c.claim_type === 'independent');
     sections.push(`\n=== CLAIMS SUMMARY ===`);
     sections.push(`Total claims sampled: ${claims.length} across ${patentClaims.size} patents (${indep.length} independent)`);
-    // Include a few independent claim texts
     for (const c of indep.slice(0, 5)) {
       const pat = patents?.find(p => p.id === c.patent_id);
       sections.push(`\n[${pat?.title || 'Unknown patent'}, Claim ${c.claim_number}]:`);
@@ -120,18 +106,12 @@ async function gatherContext(userId: string): Promise<string> {
     }
   }
 
-  // Competitors
   if (competitors && competitors.length > 0) {
     sections.push(`\n=== COMPETITORS (${competitors.length}) ===`);
     const docsMap = new Map<string, any[]>();
-    for (const d of docs) {
-      if (!docsMap.has(d.competitor_id)) docsMap.set(d.competitor_id, []);
-      docsMap.get(d.competitor_id)!.push(d);
-    }
+    for (const d of docs) { if (!docsMap.has(d.competitor_id)) docsMap.set(d.competitor_id, []); docsMap.get(d.competitor_id)!.push(d); }
     const analysisMap = new Map<string, any>();
-    for (const a of analyses) {
-      analysisMap.set(a.competitor_id, a);
-    }
+    for (const a of analyses) analysisMap.set(a.competitor_id, a);
 
     for (const comp of competitors) {
       const compDocs = docsMap.get(comp.id) || [];
@@ -141,33 +121,21 @@ async function gatherContext(userId: string): Promise<string> {
 
       sections.push(`\n--- ${comp.name} ---`);
       if (comp.website) sections.push(`Website: ${comp.website}`);
-
-      // Parse description from notes
       const descMatch = comp.notes?.match(/Description: (.+?)(?:\n|$)/);
       if (descMatch) sections.push(`Description: ${descMatch[1]}`);
-
       sections.push(`Products/Services: ${products.length}, Patents: ${compPatents.length}`);
-
-      if (products.length > 0) {
-        sections.push(`Products: ${products.map(d => d.document_name).join(', ')}`);
-      }
-      if (compPatents.length > 0) {
-        sections.push(`Their patents: ${compPatents.slice(0, 10).map(d => d.document_name).join(', ')}${compPatents.length > 10 ? ` (+${compPatents.length - 10} more)` : ''}`);
-      }
+      if (products.length > 0) sections.push(`Products: ${products.map(d => d.document_name).join(', ')}`);
+      if (compPatents.length > 0) sections.push(`Their patents: ${compPatents.slice(0, 10).map(d => d.document_name).join(', ')}${compPatents.length > 10 ? ` (+${compPatents.length - 10} more)` : ''}`);
 
       if (analysis) {
         const r = analysis.results || {};
         sections.push(`Analysis: Risk=${r.companyRisk || '?'}, Settlement=${r.settlementProbability || '?'}%, Infringement Score=${analysis.infringement_score || '?'}`);
         if (r.products?.length) {
-          for (const p of r.products) {
-            sections.push(`  • ${p.name}: ${p.infringementProbability}% infringement — ${p.reasoning?.slice(0, 150) || ''}`);
-          }
+          for (const p of r.products) sections.push(`  • ${p.name}: ${p.infringementProbability}% infringement — ${p.reasoning?.slice(0, 150) || ''}`);
         }
         if (r.settlementFactors?.length) {
           sections.push(`Settlement factors:`);
-          for (const f of r.settlementFactors) {
-            sections.push(`  ${f.impact === 'positive' ? '🔴' : f.impact === 'negative' ? '🟢' : '⚪'} ${f.factor}: ${f.detail}`);
-          }
+          for (const f of r.settlementFactors) sections.push(`  ${f.impact === 'positive' ? '🔴' : f.impact === 'negative' ? '🟢' : '⚪'} ${f.factor}: ${f.detail}`);
         }
       } else {
         sections.push(`Analysis: Not yet completed`);
@@ -180,12 +148,6 @@ async function gatherContext(userId: string): Promise<string> {
 
 export async function POST(request: NextRequest) {
   try {
-    // ── Auth: get current user ──
-    const userId = await getUserId(request);
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized — please sign in first' }, { status: 401 });
-    }
-
     const { messages } = (await request.json()) as { messages: Message[] };
 
     if (!messages || messages.length === 0) {
@@ -197,7 +159,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
     }
 
-    // Gather DB context scoped to this user
+    // Try to identify user (optional)
+    const userId = await getUserId(request);
+
+    // Gather DB context
     const dbContext = await gatherContext(userId);
 
     const systemPrompt = `You are Paddy the Patent Defender 🥊 — a sharp, confident, and slightly cheeky AI assistant who helps users understand and defend their patent portfolio. You fight for their IP rights like a champion fights in the ring.
@@ -231,7 +196,6 @@ FORMATTING RULES:
 - Reference specific patent titles, competitor names, and scores from the data above
 - If asked about data that isn't in your context, say you don't have that info yet`;
 
-    // Call Claude
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -243,22 +207,15 @@ FORMATTING RULES:
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1500,
         system: systemPrompt,
-        messages: messages.map(m => ({
-          role: m.role,
-          content: m.content,
-        })),
+        messages: messages.map(m => ({ role: m.role, content: m.content })),
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
       console.error('Claude API error:', response.status, errText);
-      // Handle rate limiting
       if (response.status === 429) {
-        return NextResponse.json(
-          { error: 'Paddy needs a quick breather — too many requests. Try again in a moment! 🥊' },
-          { status: 429 }
-        );
+        return NextResponse.json({ error: 'Paddy needs a quick breather — too many requests. Try again in a moment! 🥊' }, { status: 429 });
       }
       return NextResponse.json({ error: 'Failed to get response from Paddy' }, { status: 500 });
     }
