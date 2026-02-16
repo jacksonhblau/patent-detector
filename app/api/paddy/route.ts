@@ -35,7 +35,7 @@ async function gatherContext(userId: string | null): Promise<string> {
   ).limit(200);
 
   // 3. Claims (scoped to user's patents)
-  const patentIds = (patents || []).map(p => p.id);
+const patentIds = (patents || []).map((p: any) => p.id);
   let claims: any[] = [];
   if (patentIds.length > 0) {
     const { data } = await supabaseAdmin.from('claims')
